@@ -3,10 +3,18 @@
 End-to-End Integration Test for COA AgentCore Streaming
 
 This script validates the complete flow from frontend to backend to AgentCore invocation,
-including SSE streaming functionality.
+including SSE streaming functionality with long-running invocations.
+
+Features:
+- Health check validation
+- Configuration validation
+- Regular chat endpoint testing
+- SSE streaming endpoint testing
+- Long-running invocation testing
+- Frontend-to-backend integration validation
 
 Usage:
-    python3 e2e_integration_test.py [--backend-url URL] [--test-streaming] [--verbose]
+    python3 e2e_integration_test.py [--backend-url URL] [--test-streaming] [--test-long-running] [--verbose]
 """
 
 import argparse
@@ -14,9 +22,10 @@ import asyncio
 import json
 import sys
 import time
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import requests
 from datetime import datetime
+import re
 
 
 class Colors:
@@ -235,6 +244,165 @@ class E2EIntegrationTest:
             self.results.append(("Streaming Chat", False, str(e)))
             return False
     
+    async def test_long_running_streaming(self) -> bool:
+        """Test long-running AgentCore invocation with streaming."""
+        self.log_info("Testing long-running AgentCore streaming invocation...")
+        
+        try:
+            import aiohttp
+            
+            # Complex query that might take longer to process
+            test_query = """
+            Analyze the security configuration of an AWS environment including:
+            1. IAM policies and roles
+            2. Security group configurations
+            3. S3 bucket encryption settings
+            4. VPC flow logs status
+            Provide a comprehensive security assessment.
+            """
+            
+            request_data = {
+                "message": test_query,
+                "session_id": f"test-long-running-{int(time.time())}",
+                "enable_trace": True,
+                "timeout": 300
+            }
+            
+            start_time = time.time()
+            events_received = []
+            content_accumulated = []
+            thinking_events = 0
+            tool_use_events = 0
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.backend_url}/api/chat/stream",
+                    json=request_data,
+                    headers={'Accept': 'text/event-stream'},
+                    timeout=aiohttp.ClientTimeout(total=320)
+                ) as response:
+                    if response.status == 200:
+                        self.log_info("Long-running stream started...")
+                        
+                        async for line in response.content:
+                            line_str = line.decode('utf-8').strip()
+                            
+                            if line_str.startswith('event:'):
+                                event_type = line_str.split(':', 1)[1].strip()
+                                events_received.append(event_type)
+                                
+                                if event_type == 'thinking':
+                                    thinking_events += 1
+                                elif event_type == 'tool_use':
+                                    tool_use_events += 1
+                                
+                                if self.verbose:
+                                    elapsed = time.time() - start_time
+                                    self.log_info(f"[{elapsed:.1f}s] Event: {event_type}")
+                            
+                            elif line_str.startswith('data:'):
+                                data_str = line_str.split(':', 1)[1].strip()
+                                try:
+                                    data = json.loads(data_str)
+                                    if 'content' in data and data['content']:
+                                        content_accumulated.append(data['content'])
+                                        if self.verbose:
+                                            self.log_info(f"Content chunk ({len(data['content'])} chars)")
+                                except json.JSONDecodeError:
+                                    pass
+                        
+                        elapsed_time = time.time() - start_time
+                        
+                        # Validate long-running invocation
+                        success_criteria = [
+                            ('start' in events_received, "Start event received"),
+                            ('complete' in events_received or 'error' in events_received, "Completion event received"),
+                            (len(content_accumulated) > 0, f"Content received: {len(content_accumulated)} chunks"),
+                            (elapsed_time >= 1.0, f"Took sufficient time: {elapsed_time:.2f}s")
+                        ]
+                        
+                        all_passed = all(criterion[0] for criterion in success_criteria)
+                        
+                        if all_passed:
+                            self.log_success(f"Long-running streaming test passed!")
+                            self.log_success(f"  - Duration: {elapsed_time:.2f}s")
+                            self.log_success(f"  - Events: {len(events_received)} ({', '.join(set(events_received))})")
+                            self.log_success(f"  - Content chunks: {len(content_accumulated)}")
+                            self.log_success(f"  - Thinking events: {thinking_events}")
+                            self.log_success(f"  - Tool use events: {tool_use_events}")
+                            self.results.append(("Long-Running Streaming", True, None))
+                            return True
+                        else:
+                            failed_criteria = [c[1] for c in success_criteria if not c[0]]
+                            self.log_error(f"Long-running test failed: {', '.join(failed_criteria)}")
+                            self.results.append(("Long-Running Streaming", False, f"Failed: {failed_criteria}"))
+                            return False
+                    else:
+                        self.log_error(f"Long-running stream failed with status {response.status}")
+                        self.results.append(("Long-Running Streaming", False, f"HTTP {response.status}"))
+                        return False
+                        
+        except ImportError:
+            self.log_warning("aiohttp not installed, skipping long-running streaming test")
+            self.results.append(("Long-Running Streaming", None, "aiohttp not available"))
+            return False
+        except asyncio.TimeoutError:
+            self.log_error("Long-running stream timed out (this might be expected for very long operations)")
+            self.results.append(("Long-Running Streaming", False, "Timeout"))
+            return False
+        except Exception as e:
+            self.log_error(f"Long-running streaming error: {e}")
+            self.results.append(("Long-Running Streaming", False, str(e)))
+            return False
+    
+    async def test_frontend_integration(self) -> bool:
+        """Test frontend JavaScript integration capabilities."""
+        self.log_info("Testing frontend integration points...")
+        
+        try:
+            # Test CORS headers
+            response = requests.options(
+                f"{self.backend_url}/api/chat/stream",
+                headers={
+                    'Origin': 'http://localhost:8080',
+                    'Access-Control-Request-Method': 'POST',
+                    'Access-Control-Request-Headers': 'Content-Type'
+                },
+                timeout=10
+            )
+            
+            if 'Access-Control-Allow-Origin' in response.headers:
+                self.log_success("CORS configured correctly for frontend")
+                cors_passed = True
+            else:
+                self.log_warning("CORS headers missing - frontend might have issues")
+                cors_passed = False
+            
+            # Test SSE content-type support
+            response = requests.get(
+                f"{self.backend_url}/health",
+                headers={'Accept': 'text/event-stream'},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                self.log_success("Backend handles SSE Accept headers")
+                sse_passed = True
+            else:
+                sse_passed = False
+            
+            if cors_passed and sse_passed:
+                self.results.append(("Frontend Integration", True, None))
+                return True
+            else:
+                self.results.append(("Frontend Integration", False, "CORS or SSE support issues"))
+                return False
+                
+        except Exception as e:
+            self.log_error(f"Frontend integration test error: {e}")
+            self.results.append(("Frontend Integration", False, str(e)))
+            return False
+    
     def test_agent_status(self) -> bool:
         """Test agent status endpoint."""
         self.log_info("Testing agent status endpoint...")
@@ -301,12 +469,13 @@ class E2EIntegrationTest:
         
         return failed == 0
     
-    async def run_all_tests(self, test_streaming: bool = True) -> bool:
+    async def run_all_tests(self, test_streaming: bool = True, test_long_running: bool = False) -> bool:
         """
         Run all integration tests.
         
         Args:
             test_streaming: Whether to test streaming functionality
+            test_long_running: Whether to test long-running invocations
             
         Returns:
             True if all tests passed
@@ -317,16 +486,23 @@ class E2EIntegrationTest:
         
         self.log_info(f"Backend URL: {self.backend_url}")
         self.log_info(f"Test Streaming: {test_streaming}")
+        self.log_info(f"Test Long-Running: {test_long_running}")
         self.log_info(f"Verbose: {self.verbose}\n")
         
-        # Run tests
+        # Run basic tests
         self.test_backend_health()
         self.test_config_endpoint()
         self.test_regular_chat()
         
+        # Run streaming tests
         if test_streaming:
             await self.test_streaming_chat()
+            await self.test_frontend_integration()
+            
+            if test_long_running:
+                await self.test_long_running_streaming()
         
+        # Run agent tests
         self.test_agent_status()
         
         # Print summary
@@ -357,9 +533,34 @@ async def main():
         help="Skip streaming tests"
     )
     parser.add_argument(
+        "--test-long-running",
+        action="store_true",
+        help="Test long-running AgentCore invocations (may take several minutes)"
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
+        help="Enable verbose logging"
+    )
+    
+    args = parser.parse_args()
+    
+    test_streaming = args.test_streaming and not args.no_streaming
+    
+    # Run tests
+    test_suite = E2EIntegrationTest(
+        backend_url=args.backend_url,
+        verbose=args.verbose
+    )
+    
+    all_passed = await test_suite.run_all_tests(
+        test_streaming=test_streaming,
+        test_long_running=args.test_long_running
+    )
+    
+    # Exit with appropriate code
+    sys.exit(0 if all_passed else 1)
         help="Enable verbose logging"
     )
     

@@ -1,0 +1,146 @@
+# AgentCore Configuration for Remote AWS MCP Agent
+# This configuration connects to the remote AWS MCP server as described at:
+# https://docs.aws.amazon.com/aws-mcp/latest/userguide/getting-started-aws-mcp-server.html
+
+agent:
+  name: remote-aws-mcp-agent
+  version: 1.0.0
+  description: "Agent for AWS operations via remote Model Context Protocol server"
+  type: strands
+  
+  # Model configuration
+  model:
+    provider: bedrock
+    model_id: us.anthropic.claude-3-7-sonnet-20250219-v1:0
+    region: us-east-1
+    max_tokens: 4096
+    temperature: 0.7
+
+  # Remote MCP server connection
+  mcp_integration:
+    mode: remote
+    connection_type: http
+    server_url: "${AWS_MCP_SERVER_URL}"  # Set via environment variable
+    authentication:
+      type: iam_role
+      role_arn: "${AWS_MCP_ASSUME_ROLE_ARN}"  # Optional cross-account role
+    
+    # Connection settings
+    timeout_seconds: 300
+    retry_attempts: 3
+    retry_backoff_multiplier: 2
+    
+    # Health check
+    health_check:
+      enabled: true
+      endpoint: "/health"
+      interval_seconds: 60
+
+  # Agent capabilities
+  capabilities:
+    - aws_operations
+    - remote_mcp_integration
+    - multi_service_support
+    - permission_validation
+    - cost_analysis
+    - cross_account_access
+
+  # Tool configuration
+  tools:
+    - name: analyze_request_for_aws_operations
+      description: "Analyze user requests to determine AWS operations"
+      enabled: true
+      
+    - name: format_aws_cli_command
+      description: "Format AWS CLI commands for MCP server"
+      enabled: true
+      
+    - name: validate_aws_permissions
+      description: "Validate AWS permissions for operations"
+      enabled: true
+      
+    - name: think
+      description: "Reasoning tool for complex operations"
+      enabled: true
+
+  # Logging configuration
+  logging:
+    level: INFO
+    structured: true
+    include_trace: true
+    
+  # Performance settings
+  performance:
+    max_concurrent_requests: 5
+    request_queue_size: 100
+    stream_chunk_size: 1024
+
+# Runtime environment
+runtime:
+  platform: bedrock-agentcore
+  deployment_type: container
+  
+  # Environment variables
+  environment:
+    AWS_MCP_SERVER_URL: ""  # To be configured during deployment
+    AWS_MCP_ASSUME_ROLE_ARN: ""  # Optional
+    AWS_DEFAULT_REGION: us-east-1
+    LOG_LEVEL: INFO
+
+  # Resource limits
+  resources:
+    memory_mb: 512
+    cpu_units: 256
+    ephemeral_storage_gb: 10
+
+# Monitoring and observability
+monitoring:
+  enabled: true
+  metrics:
+    - agent_invocations_total
+    - agent_invocation_duration_seconds
+    - mcp_requests_total
+    - mcp_request_failures_total
+    - mcp_connection_errors_total
+  
+  cloudwatch:
+    log_group: /aws/bedrock/agentcore/remote-aws-mcp-agent
+    retention_days: 7
+
+# Security settings
+security:
+  # IAM permissions required
+  required_permissions:
+    - bedrock:InvokeModel
+    - logs:CreateLogGroup
+    - logs:CreateLogStream
+    - logs:PutLogEvents
+    - sts:AssumeRole  # For cross-account MCP access
+  
+  # Network configuration
+  network:
+    vpc_enabled: true
+    require_encryption_in_transit: true
+    
+  # Secrets management
+  secrets:
+    provider: aws_secrets_manager
+    rotation_enabled: false
+
+# Metadata for AgentCore runtime
+metadata:
+  tags:
+    Environment: production
+    Component: strands-agent
+    AgentType: remote-mcp
+    MCPServer: aws-mcp-remote
+    Version: "1.0.0"
+  
+  # Discovery metadata
+  discovery:
+    auto_register: true
+    health_check_enabled: true
+    registration_tags:
+      - aws-operations
+      - mcp-remote
+      - multi-service
