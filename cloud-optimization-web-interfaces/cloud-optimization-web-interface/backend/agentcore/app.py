@@ -3,13 +3,14 @@ AgentCore FastAPI Application Factory
 Creates FastAPI application for Strands Agent integration via Bedrock AgentCore Runtime.
 """
 
+import asyncio
 import logging
 import os
 from datetime import datetime
 from typing import Dict, Any, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # Shared components
 from shared.services.config_service import config_service
@@ -480,6 +481,133 @@ def register_agentcore_routes(app: FastAPI, services: Dict[str, Any], full_mode:
             
         except Exception as e:
             logger.error(f"Model invocation error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # SSE Streaming endpoint for long-running invocations
+    from fastapi.responses import StreamingResponse
+    
+    @app.post("/api/chat/stream")
+    async def chat_stream_endpoint(request: dict):
+        """
+        SSE streaming chat endpoint for long-running agent invocations.
+        
+        Supports Server-Sent Events (SSE) for real-time streaming responses.
+        """
+        try:
+            message = request.get("message", "")
+            session_id = request.get("session_id", "default")
+            agent_id = request.get("agent_id")
+            agent_alias_id = request.get("agent_alias_id", "TSTALIASID")
+            enable_trace = request.get("enable_trace", False)
+            timeout = request.get("timeout", 300)
+            
+            if not message:
+                raise HTTPException(status_code=400, detail="Message is required")
+            
+            # Initialize SSE streaming service if not already available
+            if "sse_streaming" not in services:
+                from agentcore.services.sse_streaming_service import SSEStreamingService
+                region = services["config"].get_config_value("AWS_DEFAULT_REGION", "us-east-1")
+                services["sse_streaming"] = SSEStreamingService(region=region)
+            
+            # If agent_id is provided, use SSE streaming service
+            if agent_id:
+                stream_generator = services["sse_streaming"].stream_agent_response(
+                    agent_id=agent_id,
+                    agent_alias_id=agent_alias_id,
+                    session_id=session_id,
+                    user_input=message,
+                    enable_trace=enable_trace,
+                    timeout=timeout
+                )
+                
+                return StreamingResponse(
+                    stream_generator,
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"  # Disable nginx buffering
+                    }
+                )
+            
+            # Fallback to regular orchestrator-based response with simulated streaming
+            else:
+                async def generate_fallback_stream():
+                    """Generate SSE stream from regular orchestrator response."""
+                    from agentcore.services.sse_streaming_service import StreamEventType, SSEStreamingService
+                    sse_service = services["sse_streaming"]
+                    invocation_id = f"fallback_{session_id}_{datetime.utcnow().timestamp()}"
+                    
+                    try:
+                        # Send start event
+                        yield sse_service.format_sse_event(
+                            StreamEventType.START,
+                            {
+                                "invocation_id": invocation_id,
+                                "session_id": session_id,
+                                "timestamp": datetime.utcnow().isoformat()
+                            },
+                            event_id=invocation_id
+                        )
+                        
+                        # Get response from orchestrator
+                        if full_mode and "strands_orchestrator" in services:
+                            response = await services["strands_orchestrator"].process_message(
+                                message=message,
+                                session_id=session_id,
+                                context=request.get("context", {})
+                            )
+                            content = response.get("content", "")
+                        else:
+                            response = await fallback_to_model_chat(services, message, session_id)
+                            content = response.get("content", "")
+                        
+                        # Stream content in chunks
+                        chunk_size = 50
+                        for i in range(0, len(content), chunk_size):
+                            chunk = content[i:i+chunk_size]
+                            yield sse_service.format_sse_event(
+                                StreamEventType.CHUNK,
+                                {"content": chunk, "timestamp": datetime.utcnow().isoformat()},
+                                event_id=invocation_id
+                            )
+                            await asyncio.sleep(0.05)  # Small delay for streaming effect
+                        
+                        # Send complete event
+                        yield sse_service.format_sse_event(
+                            StreamEventType.COMPLETE,
+                            {
+                                "invocation_id": invocation_id,
+                                "timestamp": datetime.utcnow().isoformat()
+                            },
+                            event_id=invocation_id
+                        )
+                        
+                    except Exception as e:
+                        logger.error(f"Streaming error: {e}")
+                        yield sse_service.format_sse_event(
+                            StreamEventType.ERROR,
+                            {
+                                "invocation_id": invocation_id,
+                                "error_message": str(e),
+                                "timestamp": datetime.utcnow().isoformat()
+                            },
+                            event_id=invocation_id
+                        )
+                
+                return StreamingResponse(
+                    generate_fallback_stream(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+                
+        except Exception as e:
+            logger.error(f"SSE streaming error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
     if full_mode:
