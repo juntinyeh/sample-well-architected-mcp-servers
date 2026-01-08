@@ -1,0 +1,59 @@
+# Agent Information
+
+**Agent Name:** AWS Cost Optimization Agent with Remote MCP Server
+**Version:** 1.0.0
+**Created:** 2025-01-07
+**Status:** Production Ready
+
+## Summary
+
+This agent provides AWS cost optimization and billing management capabilities through integration with remote AWS managed API MCP servers via Bedrock AgentCore Runtime.
+
+## Key Features
+
+- ✅ Comprehensive prompt validation and security
+- ✅ Intelligent task restructuring for MCP compatibility
+- ✅ Remote MCP server integration via Bedrock AgentCore Runtime
+- ✅ Long-running operation support (up to 8 hours)
+- ✅ SSM Parameter Store configuration
+- ✅ BedrockAgentCoreApp integration
+
+## Quick Stats
+
+- **Total Lines:** 3,774 lines (code + documentation)
+- **Python Files:** 3 (main.py, config.py, example_usage.py)
+- **Documentation:** 6 comprehensive guides
+- **Dependencies:** 46 Python packages
+- **Dockerfile:** Included for containerization
+
+## Documentation
+
+- `README.md` - User guide and overview
+- `DEPLOYMENT.md` - Step-by-step deployment instructions
+- `LONG_RUNNING_SUPPORT.md` - Long-running operations guide
+- `COMPARISON.md` - Comparison with legacy agent
+- `IMPLEMENTATION_SUMMARY.md` - Technical implementation details
+- `QUICK_REFERENCE.md` - Quick reference for common tasks
+
+## Getting Started
+
+```bash
+# 1. Review the documentation
+cat README.md
+
+# 2. Run verification
+./verify.sh
+
+# 3. Test examples
+python3 example_usage.py
+
+# 4. Deploy (follow DEPLOYMENT.md)
+```
+
+## Support
+
+For issues or questions, consult:
+1. README.md for usage
+2. DEPLOYMENT.md for setup
+3. TROUBLESHOOTING section in documentation
+4. CloudWatch Logs for runtime issues

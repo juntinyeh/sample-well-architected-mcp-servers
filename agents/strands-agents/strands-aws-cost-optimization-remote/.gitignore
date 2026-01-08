@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# Deployment
+package/
+*.zip
+*.tar.gz
+
+# Logs
+*.log
+logs/
+
+# AWS
+.aws/
+*.pem
+
+# Bedrock AgentCore
+.bedrock_agentcore.yaml
+
+# Build artifacts
+trust-policy.json
+permissions-policy.json
+agent-config.json
+test-payload.json
+*-test.json
+dashboard-config.json
+
+# Temporary files
+*.tmp
+.cache/
