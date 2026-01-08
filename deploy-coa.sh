@@ -1262,6 +1262,9 @@ deploy_chatbot_stack() {
     if [[ -n "$PROFILE" ]]; then
         python_args="$python_args --profile $PROFILE"
     fi
+    if [[ "$AGENTCORE_ONLY" == "true" ]]; then
+        python_args="$python_args --skip-ecs"
+    fi
 
     if ! python3 deployment-scripts/deploy_chatbot_stack.py $python_args; then
         print_error "Chatbot stack deployment failed"

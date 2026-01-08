@@ -47,6 +47,7 @@ class ChatbotStackDeployer:
         environment: str = "prod",
         profile: Optional[str] = None,
         template_version: str = "0.1.4",
+        skip_ecs: bool = False,
     ):
         """
         Initialize the chatbot stack deployer
@@ -57,12 +58,14 @@ class ChatbotStackDeployer:
             environment: Environment (dev, staging, prod)
             profile: AWS CLI profile name (optional)
             template_version: CloudFormation template version (0.1.0, 0.1.2, or 0.1.3)
+            skip_ecs: Skip ECS service deployment (infrastructure only)
         """
         self.stack_name = stack_name
         self.region = region
         self.template_version = template_version
         self.environment = environment
         self.profile = profile
+        self.skip_ecs = skip_ecs
 
         # Create session with profile if specified
         if profile:
@@ -267,6 +270,7 @@ class ChatbotStackDeployer:
             {"ParameterKey": "Environment", "ParameterValue": self.environment},
             {"ParameterKey": "SourceBucket", "ParameterValue": actual_source_bucket},
             {"ParameterKey": "ParameterPrefix", "ParameterValue": self.param_prefix},
+            {"ParameterKey": "DeployECSService", "ParameterValue": "false" if self.skip_ecs else "true"},
         ]
 
         logger.info(f"Deploying stack: {self.stack_name}")
@@ -425,6 +429,11 @@ def main():
         choices=["0.1.0", "0.1.2", "0.1.3", "0.1.4"],
         help="CloudFormation template version to use",
     )
+    parser.add_argument(
+        "--skip-ecs",
+        action="store_true",
+        help="Skip ECS service deployment (infrastructure only)",
+    )
 
     args = parser.parse_args()
 
@@ -435,6 +444,7 @@ def main():
             environment=args.environment,
             profile=args.profile,
             template_version=args.template_version,
+            skip_ecs=args.skip_ecs,
         )
 
         result = deployer.deploy()
