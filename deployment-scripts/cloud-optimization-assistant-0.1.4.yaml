@@ -37,6 +37,18 @@ Parameters:
     AllowedPattern: '^[a-zA-Z0-9]+$'
     ConstraintDescription: 'Parameter prefix must contain only alphanumeric characters'
 
+  DeployECSService:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Whether to deploy the ECS service (set to false for infrastructure-only deployment)
+
+Conditions:
+  ShouldDeployECS: !Equals [!Ref DeployECSService, 'true']
+  ShouldNotDeployECS: !Equals [!Ref DeployECSService, 'false']
+
 Resources:
   # ===== NOTE: SourceBucket is created by deployment script =====
   # No bucket validation needed as deployment script handles bucket creation and configuration
@@ -218,10 +230,37 @@ Resources:
   # EventBridge rule to trigger CodePipeline on S3 object creation
   S3PipelineTriggerRule:
     Type: AWS::Events::Rule
+    Condition: ShouldDeployECS
     DependsOn: CodePipeline
     Properties:
       Name: !Sub '${AWS::StackName}-s3-pipeline-trigger'
       Description: 'Trigger CodePipeline when source code is uploaded to S3'
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref SourceBucket
+          object:
+            key:
+              - prefix: !Ref SourceKey
+      State: ENABLED
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${AWS::StackName}-pipeline'
+          Id: CodePipelineTarget
+          RoleArn: !GetAtt EventBridgeCodePipelineRole.Arn
+
+  # EventBridge rule for infrastructure-only pipeline
+  S3PipelineTriggerRuleInfraOnly:
+    Type: AWS::Events::Rule
+    Condition: ShouldNotDeployECS
+    DependsOn: CodePipelineInfraOnly
+    Properties:
+      Name: !Sub '${AWS::StackName}-s3-pipeline-trigger'
+      Description: 'Trigger CodePipeline when source code is uploaded to S3 (infrastructure only)'
       EventPattern:
         source:
           - aws.s3
@@ -352,24 +391,30 @@ Resources:
                 Resource: 
                   - !GetAtt FrontendBuildProject.Arn
                   - !GetAtt BackendBuildProject.Arn
-              - Effect: Allow
-                Action:
-                  - ecs:DescribeServices
-                  - ecs:DescribeTaskDefinition
-                  - ecs:DescribeTasks
-                  - ecs:ListTasks
-                  - ecs:RegisterTaskDefinition
-                  - ecs:UpdateService
-                Resource: 
-                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${ECSCluster}'
-                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/${ECSCluster}/${ECSService}'
-                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/*'
-              - Effect: Allow
-                Action:
-                  - iam:PassRole
-                Resource: 
-                  - !GetAtt ECSExecutionRole.Arn
-                  - !GetAtt ECSTaskRole.Arn
+              - !If
+                - ShouldDeployECS
+                - Effect: Allow
+                  Action:
+                    - ecs:DescribeServices
+                    - ecs:DescribeTaskDefinition
+                    - ecs:DescribeTasks
+                    - ecs:ListTasks
+                    - ecs:RegisterTaskDefinition
+                    - ecs:UpdateService
+                  Resource: 
+                    - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${ECSCluster}'
+                    - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/${ECSCluster}/${ECSService}'
+                    - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/*'
+                - !Ref AWS::NoValue
+              - !If
+                - ShouldDeployECS
+                - Effect: Allow
+                  Action:
+                    - iam:PassRole
+                  Resource: 
+                    - !GetAtt ECSExecutionRole.Arn
+                    - !GetAtt ECSTaskRole.Arn
+                - !Ref AWS::NoValue
       Tags:
         - Key: Component
           Value: CodePipeline
@@ -429,10 +474,13 @@ Resources:
                   - !Sub 'arn:aws:s3:::${SourceBucket}'
                   - !GetAtt ArtifactsBucket.Arn
                   - !GetAtt FrontendBucket.Arn
-              - Effect: Allow
-                Action:
-                  - ecs:UpdateService
-                Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/${ECSCluster}/${ECSService}'
+              - !If
+                - ShouldDeployECS
+                - Effect: Allow
+                  Action:
+                    - ecs:UpdateService
+                  Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/${ECSCluster}/${ECSService}'
+                - !Ref AWS::NoValue
               - Effect: Allow
                 Action:
                   - cloudfront:CreateInvalidation
@@ -494,6 +542,7 @@ Resources:
   # Pipeline failure alarm
   PipelineFailureAlarm:
     Type: AWS::CloudWatch::Alarm
+    Condition: ShouldDeployECS
     Properties:
       AlarmName: !Sub '${AWS::StackName}-pipeline-failure'
       AlarmDescription: 'Alert when CodePipeline execution fails'
@@ -515,9 +564,35 @@ Resources:
         - Key: Component
           Value: Monitoring
 
+  # Pipeline failure alarm for infrastructure-only pipeline
+  PipelineFailureAlarmInfraOnly:
+    Type: AWS::CloudWatch::Alarm
+    Condition: ShouldNotDeployECS
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-pipeline-failure'
+      AlarmDescription: 'Alert when CodePipeline execution fails (infrastructure only)'
+      MetricName: PipelineExecutionFailure
+      Namespace: AWS/CodePipeline
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: PipelineName
+          Value: !Ref CodePipelineInfraOnly
+      AlarmActions:
+        - !Ref PipelineNotificationTopic
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Component
+          Value: Monitoring
+
   # ECS deployment failure alarm
   ECSDeploymentFailureAlarm:
     Type: AWS::CloudWatch::Alarm
+    Condition: ShouldDeployECS
     Properties:
       AlarmName: !Sub '${AWS::StackName}-ecs-deployment-failure'
       AlarmDescription: 'Alert when ECS service deployment fails'
@@ -1307,6 +1382,7 @@ Resources:
 
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
+    Condition: ShouldDeployECS
     DependsOn: BackendECRRepository
     Properties:
       Family: !Sub '${AWS::StackName}-task'
@@ -1319,7 +1395,7 @@ Resources:
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
       ContainerDefinitions:
         - Name: backend
-          Image: public.ecr.aws/s3l2z7b0/coav2-backend:latest
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${BackendECRRepository}:latest'
           PortMappings:
             - ContainerPort: 8000
               Protocol: tcp
@@ -1374,6 +1450,7 @@ Resources:
 
   ECSService:
     Type: AWS::ECS::Service
+    Condition: ShouldDeployECS
     DependsOn: ALBListener
     Properties:
       ServiceName: !Sub '${AWS::StackName}-service'
@@ -1542,6 +1619,7 @@ Resources:
   # ===== CODEPIPELINE =====
   CodePipeline:
     Type: AWS::CodePipeline::Pipeline
+    Condition: ShouldDeployECS
     DependsOn: 
       - BackendBuildProject
       - FrontendBuildProject
@@ -1608,6 +1686,69 @@ Resources:
                 ServiceName: !Ref ECSService
                 FileName: imagedefinitions.json
               InputArtifacts:
+                - Name: BackendBuildOutput
+              RunOrder: 1
+
+      Tags:
+        - Key: Component
+          Value: CodePipeline
+        - Key: Environment
+          Value: !Ref Environment
+
+  # CodePipeline for infrastructure-only deployment (no ECS deploy stage)
+  CodePipelineInfraOnly:
+    Type: AWS::CodePipeline::Pipeline
+    Condition: ShouldNotDeployECS
+    DependsOn: 
+      - BackendBuildProject
+      - FrontendBuildProject
+    Properties:
+      Name: !Sub '${AWS::StackName}-pipeline'
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactsBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                S3Bucket: !Ref SourceBucket
+                S3ObjectKey: !Ref SourceKey
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceOutput
+
+        - Name: Build
+          Actions:
+            - Name: FrontendBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref FrontendBuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+
+            - Name: BackendBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BackendBuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
                 - Name: BackendBuildOutput
               RunOrder: 1
 

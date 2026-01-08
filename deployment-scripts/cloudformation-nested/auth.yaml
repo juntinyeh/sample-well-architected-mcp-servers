@@ -1,0 +1,240 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'COA Authentication Stack - Cognito User Pools and Identity Pools'
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Environment name
+  
+  StackName:
+    Type: String
+    Description: Parent stack name
+  
+  ParameterPrefix:
+    Type: String
+    Description: Parameter prefix for SSM
+
+Resources:
+  # Cognito User Pool
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${StackName}-shared-${Environment}'
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+      UsernameAttributes:
+        - email
+      MfaConfiguration: OPTIONAL
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+      UserAttributeUpdateSettings:
+        AttributesRequireVerificationBeforeUpdate:
+          - email
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserPoolTags:
+        Environment: !Ref Environment
+        Project: CloudOptimization
+        Component: Cognito
+
+  # User Pool Domain
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub '${StackName}-${AWS::AccountId}-${Environment}'
+      UserPoolId: !Ref UserPool
+
+  # Web App Client
+  WebAppClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub '${StackName}-web-client'
+      GenerateSecret: false
+      RefreshTokenValidity: 30
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      TokenValidityUnits:
+        RefreshToken: days
+        AccessToken: minutes
+        IdToken: minutes
+      ReadAttributes:
+        - email
+        - email_verified
+      WriteAttributes:
+        - email
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      EnablePropagateAdditionalUserContextData: false
+
+  # API Client
+  APIClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub '${StackName}-api-client'
+      GenerateSecret: true
+      RefreshTokenValidity: 30
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      TokenValidityUnits:
+        RefreshToken: days
+        AccessToken: minutes
+        IdToken: minutes
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      EnableTokenRevocation: true
+
+  # Identity Pool
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: !Sub 'cloud_optimization_identity_pool_${Environment}'
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref WebAppClient
+          ProviderName: !GetAtt UserPool.ProviderName
+        - ClientId: !Ref APIClient
+          ProviderName: !GetAtt UserPool.ProviderName
+
+  # IAM Role for Authenticated Users
+  AuthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'cognito-identity.amazonaws.com:aud': !Ref IdentityPool
+              'ForAnyValue:StringLike':
+                'cognito-identity.amazonaws.com:amr': authenticated
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonCognitoPowerUser
+      Policies:
+        - PolicyName: AuthenticatedUserPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-sync:*
+                  - cognito-identity:*
+                Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Component
+          Value: Cognito
+
+  # Identity Pool Role Attachment
+  IdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt AuthenticatedRole.Arn
+
+  # SSM Parameters for Cognito Configuration
+  UserPoolIdParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ParameterPrefix}/cognito/user_pool_id'
+      Type: String
+      Value: !Ref UserPool
+      Description: Cognito User Pool ID
+      Tags:
+        Environment: !Ref Environment
+        Component: Cognito
+
+  UserPoolArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ParameterPrefix}/cognito/user_pool_arn'
+      Type: String
+      Value: !GetAtt UserPool.Arn
+      Description: Cognito User Pool ARN
+      Tags:
+        Environment: !Ref Environment
+        Component: Cognito
+
+  WebAppClientIdParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ParameterPrefix}/cognito/web_app_client_id'
+      Type: String
+      Value: !Ref WebAppClient
+      Description: Web App Client ID
+      Tags:
+        Environment: !Ref Environment
+        Component: Cognito
+
+  IdentityPoolIdParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ParameterPrefix}/cognito/identity_pool_id'
+      Type: String
+      Value: !Ref IdentityPool
+      Description: Identity Pool ID
+      Tags:
+        Environment: !Ref Environment
+        Component: Cognito
+
+  UserPoolDomainParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ParameterPrefix}/cognito/domain'
+      Type: String
+      Value: !Ref UserPoolDomain
+      Description: User Pool Domain
+      Tags:
+        Environment: !Ref Environment
+        Component: Cognito
+
+Outputs:
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+
+  UserPoolArn:
+    Description: Cognito User Pool ARN
+    Value: !GetAtt UserPool.Arn
+
+  WebAppClientId:
+    Description: Web App Client ID
+    Value: !Ref WebAppClient
+
+  APIClientId:
+    Description: API Client ID
+    Value: !Ref APIClient
+
+  IdentityPoolId:
+    Description: Identity Pool ID
+    Value: !Ref IdentityPool
+
+  UserPoolDomain:
+    Description: User Pool Domain
+    Value: !Ref UserPoolDomain

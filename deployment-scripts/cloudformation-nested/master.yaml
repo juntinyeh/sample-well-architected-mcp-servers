@@ -1,0 +1,327 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Cloud Optimization Assistant - Master Template with Nested Stacks (v1.0.0)'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Environment Configuration"
+        Parameters:
+          - Environment
+          - ParameterPrefix
+      - Label:
+          default: "Source Code Configuration"
+        Parameters:
+          - SourceBucketName
+          - TemplatesBucketName
+          - SourceCodeKey
+      - Label:
+          default: "Network Configuration"
+        Parameters:
+          - VpcCIDR
+          - PublicSubnet1CIDR
+          - PublicSubnet2CIDR
+          - PrivateSubnet1CIDR
+          - PrivateSubnet2CIDR
+      - Label:
+          default: "Container Configuration"
+        Parameters:
+          - ContainerCpu
+          - ContainerMemory
+          - DesiredCount
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name for resource tagging and configuration
+
+  ParameterPrefix:
+    Type: String
+    Default: coa
+    Description: Parameter prefix for SSM parameters
+    AllowedPattern: '^[a-zA-Z0-9]+$'
+    ConstraintDescription: 'Parameter prefix must contain only alphanumeric characters'
+
+  SourceBucketName:
+    Type: String
+    Description: S3 bucket containing source code
+    MinLength: 3
+    MaxLength: 63
+
+  TemplatesBucketName:
+    Type: String
+    Description: S3 bucket containing nested CloudFormation templates
+    MinLength: 3
+    MaxLength: 63
+
+  SourceCodeKey:
+    Type: String
+    Default: source.zip
+    Description: S3 key for source code zip file
+
+  VpcCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: CIDR block for VPC
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+
+  PublicSubnet1CIDR:
+    Type: String
+    Default: 10.0.1.0/24
+    Description: CIDR block for public subnet 1
+
+  PublicSubnet2CIDR:
+    Type: String
+    Default: 10.0.2.0/24
+    Description: CIDR block for public subnet 2
+
+  PrivateSubnet1CIDR:
+    Type: String
+    Default: 10.0.10.0/24
+    Description: CIDR block for private subnet 1
+
+  PrivateSubnet2CIDR:
+    Type: String
+    Default: 10.0.20.0/24
+    Description: CIDR block for private subnet 2
+
+  ContainerCpu:
+    Type: Number
+    Default: 256
+    AllowedValues: [256, 512, 1024, 2048, 4096]
+    Description: CPU units for ECS task (256 = 0.25 vCPU)
+
+  ContainerMemory:
+    Type: Number
+    Default: 512
+    AllowedValues: [512, 1024, 2048, 4096, 8192]
+    Description: Memory for ECS task in MB
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+    Description: Desired number of ECS tasks
+
+Resources:
+  # Authentication Stack - Cognito User Pools and Identity Pools
+  AuthStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${TemplatesBucketName}/auth.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        StackName: !Ref AWS::StackName
+        ParameterPrefix: !Ref ParameterPrefix
+      Tags:
+        - Key: Component
+          Value: Authentication
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Storage Stack - S3 Buckets and ECR Repositories
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${TemplatesBucketName}/storage.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        StackName: !Ref AWS::StackName
+        SourceBucketName: !Ref SourceBucketName
+      Tags:
+        - Key: Component
+          Value: Storage
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Network Stack - VPC, Subnets, Security Groups
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${TemplatesBucketName}/network.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        VpcCIDR: !Ref VpcCIDR
+        PublicSubnet1CIDR: !Ref PublicSubnet1CIDR
+        PublicSubnet2CIDR: !Ref PublicSubnet2CIDR
+        PrivateSubnet1CIDR: !Ref PrivateSubnet1CIDR
+        PrivateSubnet2CIDR: !Ref PrivateSubnet2CIDR
+      Tags:
+        - Key: Component
+          Value: Network
+        - Key: Environment
+          Value: !Ref Environment
+
+  # CI/CD Stack - CodePipeline, CodeBuild
+  CiCdStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - StorageStack
+      - NetworkStack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${TemplatesBucketName}/cicd.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        StackName: !Ref AWS::StackName
+        SourceBucketName: !Ref SourceBucketName
+        SourceCodeKey: !Ref SourceCodeKey
+        EcrRepositoryUri: !GetAtt StorageStack.Outputs.EcrRepositoryUri
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        PrivateSubnet1: !GetAtt NetworkStack.Outputs.PrivateSubnet1
+        PrivateSubnet2: !GetAtt NetworkStack.Outputs.PrivateSubnet2
+        CodeBuildSecurityGroup: !GetAtt NetworkStack.Outputs.CodeBuildSecurityGroup
+      Tags:
+        - Key: Component
+          Value: CICD
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Compute Stack - ECS Cluster, Tasks, Services
+  ComputeStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - NetworkStack
+      - StorageStack
+      - AuthStack
+      - CiCdStack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${TemplatesBucketName}/compute.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        StackName: !Ref AWS::StackName
+        ParameterPrefix: !Ref ParameterPrefix
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        PublicSubnet1: !GetAtt NetworkStack.Outputs.PublicSubnet1
+        PublicSubnet2: !GetAtt NetworkStack.Outputs.PublicSubnet2
+        PrivateSubnet1: !GetAtt NetworkStack.Outputs.PrivateSubnet1
+        PrivateSubnet2: !GetAtt NetworkStack.Outputs.PrivateSubnet2
+        ALBSecurityGroup: !GetAtt NetworkStack.Outputs.ALBSecurityGroup
+        ECSSecurityGroup: !GetAtt NetworkStack.Outputs.ECSSecurityGroup
+        EcrRepositoryUri: !GetAtt StorageStack.Outputs.EcrRepositoryUri
+        ContainerCpu: !Ref ContainerCpu
+        ContainerMemory: !Ref ContainerMemory
+        DesiredCount: !Ref DesiredCount
+        UserPoolId: !GetAtt AuthStack.Outputs.UserPoolId
+        UserPoolClientId: !GetAtt AuthStack.Outputs.WebAppClientId
+      Tags:
+        - Key: Component
+          Value: Compute
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  # Authentication Outputs
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !GetAtt AuthStack.Outputs.UserPoolId
+    Export:
+      Name: !Sub '${AWS::StackName}-UserPoolId'
+
+  UserPoolArn:
+    Description: Cognito User Pool ARN
+    Value: !GetAtt AuthStack.Outputs.UserPoolArn
+    Export:
+      Name: !Sub '${AWS::StackName}-UserPoolArn'
+
+  WebAppClientId:
+    Description: Web App Client ID
+    Value: !GetAtt AuthStack.Outputs.WebAppClientId
+    Export:
+      Name: !Sub '${AWS::StackName}-WebAppClientId'
+
+  IdentityPoolId:
+    Description: Cognito Identity Pool ID
+    Value: !GetAtt AuthStack.Outputs.IdentityPoolId
+    Export:
+      Name: !Sub '${AWS::StackName}-IdentityPoolId'
+
+  # Storage Outputs
+  ArtifactsBucket:
+    Description: Artifacts S3 Bucket
+    Value: !GetAtt StorageStack.Outputs.ArtifactsBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ArtifactsBucket'
+
+  EcrRepositoryUri:
+    Description: ECR Repository URI
+    Value: !GetAtt StorageStack.Outputs.EcrRepositoryUri
+    Export:
+      Name: !Sub '${AWS::StackName}-EcrRepositoryUri'
+
+  # Network Outputs
+  VpcId:
+    Description: VPC ID
+    Value: !GetAtt NetworkStack.Outputs.VpcId
+    Export:
+      Name: !Sub '${AWS::StackName}-VpcId'
+
+  PublicSubnets:
+    Description: Public Subnet IDs
+    Value: !Sub 
+      - '${Subnet1},${Subnet2}'
+      - Subnet1: !GetAtt NetworkStack.Outputs.PublicSubnet1
+        Subnet2: !GetAtt NetworkStack.Outputs.PublicSubnet2
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnets'
+
+  PrivateSubnets:
+    Description: Private Subnet IDs
+    Value: !Sub 
+      - '${Subnet1},${Subnet2}'
+      - Subnet1: !GetAtt NetworkStack.Outputs.PrivateSubnet1
+        Subnet2: !GetAtt NetworkStack.Outputs.PrivateSubnet2
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnets'
+
+  # CI/CD Outputs
+  CodePipelineName:
+    Description: CodePipeline Name
+    Value: !GetAtt CiCdStack.Outputs.CodePipelineName
+    Export:
+      Name: !Sub '${AWS::StackName}-CodePipelineName'
+
+  CodeBuildProjectName:
+    Description: CodeBuild Project Name
+    Value: !GetAtt CiCdStack.Outputs.CodeBuildProjectName
+    Export:
+      Name: !Sub '${AWS::StackName}-CodeBuildProjectName'
+
+  # Compute Outputs
+  LoadBalancerDNS:
+    Description: Application Load Balancer DNS Name
+    Value: !GetAtt ComputeStack.Outputs.LoadBalancerDNS
+    Export:
+      Name: !Sub '${AWS::StackName}-LoadBalancerDNS'
+
+  LoadBalancerUrl:
+    Description: Application Load Balancer URL
+    Value: !GetAtt ComputeStack.Outputs.LoadBalancerUrl
+    Export:
+      Name: !Sub '${AWS::StackName}-LoadBalancerUrl'
+
+  ECSClusterName:
+    Description: ECS Cluster Name
+    Value: !GetAtt ComputeStack.Outputs.ECSClusterName
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSClusterName'
+
+  ECSServiceName:
+    Description: ECS Service Name
+    Value: !GetAtt ComputeStack.Outputs.ECSServiceName
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSServiceName'
+
+  # Stack Information
+  StackVersion:
+    Description: CloudFormation Stack Version
+    Value: "1.0.0"
+
+  DeploymentTimestamp:
+    Description: Deployment Timestamp
+    Value: !Sub '${AWS::StackName}-${Environment}'

@@ -11,6 +11,8 @@
     <script src="https://unpkg.com/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
     <script src="config.js"></script>
     <script src="js/template-discovery-service.js"></script>
+    <script src="js/sse-streaming-client.js"></script>
+    <script src="js/enhanced-send-message.js"></script>
     <style>
         * {
             margin: 0;
@@ -1152,6 +1154,13 @@
                 <div id="messages" class="chat-messages"></div>
 
                 <div class="input-container">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                        <label style="display: flex; align-items: center; gap: 5px; font-size: 14px; cursor: pointer;">
+                            <input type="checkbox" id="enableStreaming" checked style="cursor: pointer;">
+                            <span>⚡ Enable Real-time Streaming</span>
+                        </label>
+                        <span style="font-size: 12px; color: #666;">(Recommended for long-running queries)</span>
+                    </div>
                     <input type="text" id="messageInput" class="message-input"
                         placeholder="Ask about optimizing your AWS environment..." onkeypress="handleKeyPress(event)">
                     <button onclick="sendMessage()" id="sendBtn" class="send-btn">Send</button>

@@ -1,0 +1,262 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'COA Storage Stack - S3 Buckets and ECR Private Repository'
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Environment name
+  
+  StackName:
+    Type: String
+    Description: Parent stack name
+  
+  SourceBucketName:
+    Type: String
+    Description: Source code S3 bucket name (created externally)
+
+Resources:
+  # Artifacts Bucket for CodePipeline
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${StackName}-artifacts-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
+            NoncurrentVersionExpirationInDays: 7
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+      Tags:
+        - Key: Component
+          Value: CodePipeline
+        - Key: Purpose
+          Value: Artifacts
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Logs Bucket for CloudFront and ALB logs
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${StackName}-logs-${AWS::AccountId}-${AWS::Region}'
+      AccessControl: LogDeliveryWrite
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 90
+          - Id: TransitionLogsToGlacier
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: GLACIER
+      Tags:
+        - Key: Component
+          Value: Logging
+        - Key: Purpose
+          Value: AccessLogs
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Frontend Bucket for Static Website Hosting
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${StackName}-frontend-${AWS::AccountId}-${AWS::Region}'
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - '*'
+            AllowedMethods:
+              - GET
+              - HEAD
+            AllowedHeaders:
+              - '*'
+            MaxAge: 3600
+      Tags:
+        - Key: Component
+          Value: Frontend
+        - Key: Purpose
+          Value: StaticWebsite
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Frontend Bucket Policy for CloudFront Access
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${FrontendBucket.Arn}/*'
+          - Sid: AllowPublicRead
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub '${FrontendBucket.Arn}/*'
+
+  # Private ECR Repository for Container Images
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${StackName}-backend'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Remove untagged images after 7 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 7
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Component
+          Value: Container
+        - Key: Purpose
+          Value: ImageRegistry
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ECR Repository Policy - Allow ECS Task Role Access
+  ECRRepositoryPolicy:
+    Type: AWS::ECR::RepositoryPolicy
+    Properties:
+      RepositoryName: !Ref ECRRepository
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowPull
+            Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+                - codebuild.amazonaws.com
+            Action:
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:BatchCheckLayerAvailability
+          - Sid: AllowPush
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - ecr:PutImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+
+Outputs:
+  ArtifactsBucket:
+    Description: Artifacts S3 Bucket Name
+    Value: !Ref ArtifactsBucket
+
+  ArtifactsBucketArn:
+    Description: Artifacts S3 Bucket ARN
+    Value: !GetAtt ArtifactsBucket.Arn
+
+  LogsBucket:
+    Description: Logs S3 Bucket Name
+    Value: !Ref LogsBucket
+
+  LogsBucketArn:
+    Description: Logs S3 Bucket ARN
+    Value: !GetAtt LogsBucket.Arn
+
+  FrontendBucket:
+    Description: Frontend S3 Bucket Name
+    Value: !Ref FrontendBucket
+
+  FrontendBucketArn:
+    Description: Frontend S3 Bucket ARN
+    Value: !GetAtt FrontendBucket.Arn
+
+  FrontendBucketWebsiteURL:
+    Description: Frontend S3 Bucket Website URL
+    Value: !GetAtt FrontendBucket.WebsiteURL
+
+  ECRRepositoryUri:
+    Description: ECR Repository URI
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}'
+
+  ECRRepositoryName:
+    Description: ECR Repository Name
+    Value: !Ref ECRRepository
+
+  ECRRepositoryArn:
+    Description: ECR Repository ARN
+    Value: !GetAtt ECRRepository.Arn
+
+  SourceBucketName:
+    Description: Source Code Bucket Name (External)
+    Value: !Ref SourceBucketName
